@@ -174,7 +174,8 @@ class NukeSubmitDeadlineModel(BaseSettingsModel):
         default_factory=list,
         title="Allowed environment keys"
     )
-
+    publish_default_template: str = SettingsField(title="Default publish path template")
+    plugin_name: str = SettingsField(title="Submit using plugin")
     env_search_replace_values: list[EnvSearchReplaceSubmodel] = SettingsField(
         default_factory=list,
         title="Search & replace in environment values",
@@ -552,6 +553,8 @@ DEFAULT_DEADLINE_PLUGINS_SETTINGS = {
         "use_gpu": True,
         "workfile_dependency": True,
         "use_published_workfile": True,
+        "publish_default_template": "default",
+        "plugin_name": "Nuke",
         "env_allowed_keys": [],
         "env_search_replace_values": [],
         "limit_groups": []

@@ -14,9 +14,12 @@ from ayon_core.lib import (
     BoolDef,
     NumberDef
 )
+from ayon_core.settings import get_project_settings
 from ayon_deadline.abstract_submit_deadline import requests_post
 from ayon_deadline.lib import get_instance_job_envs, get_ayon_render_job_envs
 
+
+DEADLINE_SETTINGS = get_project_settings(os.getenv("AYON_PROJECT_NAME"))["deadline"]
 
 class NukeSubmitDeadline(pyblish.api.InstancePlugin,
                          AYONPyblishPluginMixin):
@@ -186,9 +189,12 @@ class NukeSubmitDeadline(pyblish.api.InstancePlugin,
         """This method is temporary while the class is not inherited from
         AbstractSubmitDeadline"""
         anatomy = context.data["anatomy"]
-        # WARNING Hardcoded template name 'default' > may not be used
+        self.log.debug(f"{context.data=}")
+        self.log.debug(f"{DEADLINE_SETTINGS=}")
+        nuke_settings = DEADLINE_SETTINGS["publish"]["NukeSubmitDeadline"]
+        publish_default_template = nuke_settings.get("publish_default_template")
         publish_template = anatomy.get_template_item(
-            "publish", "default", "path"
+            "publish", publish_default_template, "path"
         )
         for instance in context:
             if (
@@ -273,6 +279,10 @@ class NukeSubmitDeadline(pyblish.api.InstancePlugin,
         limit_groups = self.get_limit_groups()
         self.log.debug("Limit groups: `{}`".format(limit_groups))
 
+        # Plugin Name
+        nuke_settings = DEADLINE_SETTINGS["publish"]["NukeSubmitDeadline"]
+        plugin_name = nuke_settings.get("plugin_name", "Nuke")
+
         payload = {
             "JobInfo": {
                 # Top-level group name
@@ -299,7 +309,7 @@ class NukeSubmitDeadline(pyblish.api.InstancePlugin,
                 "SecondaryPool": instance.data.get("secondaryPool"),
                 "Group": self.group,
 
-                "Plugin": "Nuke",
+                "Plugin": plugin_name,
                 "Frames": "{start}-{end}".format(
                     start=start_frame,
                     end=end_frame
