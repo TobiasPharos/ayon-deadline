@@ -1,4 +1,4 @@
-# /usr/bin/env python3
+# /usr/bin/env python2.7
 # -*- coding: utf-8 -*-
 import os
 import tempfile
@@ -106,7 +106,7 @@ class OpenPypeVersion:
             return self.major == other.major and self.minor == other.minor
         return False
 
-    def __bool__(self):
+    def __nonzero__(self):
         return self.is_valid
 
     def __repr__(self):
@@ -214,8 +214,8 @@ def get_openpype_versions(dir_list):
         if install_dir:
             print("--- Looking for OpenPype at: {}".format(install_dir))
             sub_dirs = [
-                f.path for f in os.scandir(install_dir)
-                if f.is_dir()
+                os.path.join(install_dir, f) for f in os.listdir(install_dir)
+                if os.path.isdir(os.path.join(install_dir, f))
             ]
             for subdir in sub_dirs:
                 version = get_openpype_version_from_path(subdir)
@@ -395,7 +395,7 @@ def inject_openpype_environment(deadlinePlugin):
         if "PATH" in contents:
             # Set os.environ[PATH] so studio settings' path entries
             # can be used to define search path for executables.
-            print(f">>> Setting 'PATH' Environment to: {contents['PATH']}")
+            print(">>> Setting 'PATH' Environment to: {}".format(contents["PATH"]))
             os.environ["PATH"] = contents["PATH"]
 
         script_url = job.GetJobPluginInfoKeyValue("ScriptFilename")
@@ -516,7 +516,7 @@ def inject_ayon_environment(deadlinePlugin):
         if "PATH" in contents:
             # Set os.environ[PATH] so studio settings' path entries
             # can be used to define search path for executables.
-            print(f">>> Setting 'PATH' Environment to: {contents['PATH']}")
+            print(">>> Setting 'PATH' Environment to: {}".format(contents["PATH"]))
             os.environ["PATH"] = contents["PATH"]
 
         script_url = job.GetJobPluginInfoKeyValue("ScriptFilename")
