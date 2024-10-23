@@ -79,6 +79,14 @@ class AyonDeadlinePlugin(DeadlinePlugin):
                 job.GetJobEnvironmentKeyValue("AYON_API_KEY") or
                 config.GetConfigEntryWithDefault("AyonApiKey", "")
         )
+
+        # Remove when Deadline Remote Connection Server is set up!
+        api_key_path = os.path.join(os.getenv("AYONLIB", ""), "deadline", "api.txt")
+        if os.path.isfile(api_key_path):    
+            with open(api_key_path, "r") as file:
+                ayon_api_key = file.readline().strip()
+        # --------------------------------------------------------
+
         ayon_bundle_name = job.GetJobEnvironmentKeyValue("AYON_BUNDLE_NAME")
 
         environment = {
