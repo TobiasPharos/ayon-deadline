@@ -446,6 +446,13 @@ def inject_ayon_environment(deadlinePlugin):
             )
 
         ayon_server_url, ayon_api_key = handle_credentials(job)
+        
+        # Remove when Deadline Remote Connection Server is set up!
+        api_key_path = os.path.join(os.getenv("AYONLIB", ""), "deadline", "api.txt")
+        if os.path.isfile(api_key_path):    
+            with open(api_key_path, "r") as file:
+                ayon_api_key = file.readline().strip()
+        # --------------------------------------------------------
 
         site_id = os.environ.get("AYON_SITE_ID")
         shared_env_group = None
