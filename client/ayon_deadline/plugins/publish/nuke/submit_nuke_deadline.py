@@ -314,6 +314,7 @@ class NukeSubmitDeadline(pyblish.api.InstancePlugin, AYONPyblishPluginMixin):
             "NUKE_PATH",
             "FOUNDRY_LICENSE",
             "PHAROS_LOCATION",
+            "PHAROS_NUKELIB",
         ]
 
         # add allowed keys from preset if any
