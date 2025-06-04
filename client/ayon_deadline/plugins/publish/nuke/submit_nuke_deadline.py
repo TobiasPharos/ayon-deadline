@@ -19,10 +19,12 @@ from ayon_deadline.abstract_submit_deadline import requests_post
 from ayon_deadline.lib import get_instance_job_envs, get_ayon_render_job_envs
 
 
-DEADLINE_SETTINGS = get_project_settings(os.getenv("AYON_PROJECT_NAME"))["deadline"]
+DEADLINE_SETTINGS = get_project_settings(os.getenv("AYON_PROJECT_NAME"))[
+    "deadline"
+]
 
-class NukeSubmitDeadline(pyblish.api.InstancePlugin,
-                         AYONPyblishPluginMixin):
+
+class NukeSubmitDeadline(pyblish.api.InstancePlugin, AYONPyblishPluginMixin):
     """Submit write to Deadline
 
     Renders are submitted to a Deadline Web Service as
@@ -58,12 +60,13 @@ class NukeSubmitDeadline(pyblish.api.InstancePlugin,
         self._comment = context.data.get("comment", "")
         self._ver = re.search(r"\d+\.\d+", context.data.get("hostVersion"))
         self._deadline_user = context.data.get(
-            "deadlineUser", getpass.getuser())
+            "deadlineUser", getpass.getuser()
+        )
         submit_frame_start = int(instance.data["frameStartHandle"])
         submit_frame_end = int(instance.data["frameEndHandle"])
 
         # get output path
-        render_path = instance.data['path']
+        render_path = instance.data["path"]
         script_path = context.data["currentFile"]
 
         use_published_workfile = instance.data["attributeValues"].get(
@@ -81,14 +84,15 @@ class NukeSubmitDeadline(pyblish.api.InstancePlugin,
                 render_path,
                 node.name(),
                 submit_frame_start,
-                submit_frame_end
+                submit_frame_end,
             )
             r_job_response_json = r_job_response.json()
             instance.data["deadlineSubmissionJob"] = r_job_response_json
 
             # Store output dir for unified publisher (filesequence)
-            instance.data["outputDir"] = os.path.dirname(
-                render_path).replace("\\", "/")
+            instance.data["outputDir"] = os.path.dirname(render_path).replace(
+                "\\", "/"
+            )
             instance.data["publishJobState"] = "Suspended"
 
         if instance.data.get("bakingNukeScripts"):
@@ -105,7 +109,7 @@ class NukeSubmitDeadline(pyblish.api.InstancePlugin,
                     submit_frame_start,
                     submit_frame_end,
                     r_job_response_json,
-                    baking_submission=True
+                    baking_submission=True,
                 )
 
                 # Store output dir for unified publisher (filesequence)
@@ -118,7 +122,8 @@ class NukeSubmitDeadline(pyblish.api.InstancePlugin,
                     instance.data["bakingSubmissionJobs"] = []
 
                 instance.data["bakingSubmissionJobs"].append(
-                    b_job_response.json()["_id"])
+                    b_job_response.json()["_id"]
+                )
 
         # redefinition of families
         if "render" in instance.data["productType"]:
@@ -138,7 +143,9 @@ class NukeSubmitDeadline(pyblish.api.InstancePlugin,
         self.log.debug(f"{context.data=}")
         self.log.debug(f"{DEADLINE_SETTINGS=}")
         nuke_settings = DEADLINE_SETTINGS["publish"]["NukeSubmitDeadline"]
-        publish_default_template = nuke_settings.get("publish_default_template")
+        publish_default_template = nuke_settings.get(
+            "publish_default_template"
+        )
         publish_template = anatomy.get_template_item(
             "publish", publish_default_template, "path"
         )
@@ -165,9 +172,7 @@ class NukeSubmitDeadline(pyblish.api.InstancePlugin,
             template_filled = publish_template.format(template_data)
             script_path = os.path.normpath(template_filled)
             self.log.info(
-                "Using published scene for render {}".format(
-                    script_path
-                )
+                "Using published scene for render {}".format(script_path)
             )
             return script_path
 
@@ -233,68 +238,54 @@ class NukeSubmitDeadline(pyblish.api.InstancePlugin,
             "JobInfo": {
                 # Top-level group name
                 "BatchName": batch_name,
-
                 # Job name, as seen in Monitor
                 "Name": job_name,
-
                 # Arbitrary username, for visualisation in Monitor
                 "UserName": self._deadline_user,
-
                 "Priority": instance.data["attributeValues"].get(
-                    "priority", self.priority),
-                "ChunkSize": instance.data["attributeValues"].get(
-                    "chunk", self.chunk_size),
-                "ConcurrentTasks": instance.data["attributeValues"].get(
-                    "concurrency",
-                    self.concurrent_tasks
+                    "priority", self.priority
                 ),
-
+                "ChunkSize": instance.data["attributeValues"].get(
+                    "chunk", self.chunk_size
+                ),
+                "ConcurrentTasks": instance.data["attributeValues"].get(
+                    "concurrency", self.concurrent_tasks
+                ),
                 "Department": self.department,
-
                 "Pool": instance.data.get("primaryPool"),
                 "SecondaryPool": instance.data.get("secondaryPool"),
                 "Group": self.group,
-
                 "Plugin": plugin_name,
                 "Frames": "{start}-{end}".format(
-                    start=start_frame,
-                    end=end_frame
+                    start=start_frame, end=end_frame
                 ),
                 "Comment": self._comment,
-
                 # Optional, enable double-click to preview rendered
                 # frames from Deadline Monitor
                 "OutputFilename0": output_filename_0.replace("\\", "/"),
-
                 # limiting groups
-                "LimitGroups": ",".join(limit_groups)
-
+                "LimitGroups": ",".join(limit_groups),
             },
             "PluginInfo": {
                 # Input
                 "SceneFile": script_path,
-
                 # Output directory and filename
                 "OutputFilePath": render_dir.replace("\\", "/"),
                 # "OutputFilePrefix": render_variables["filename_prefix"],
-
                 # Mandatory for Deadline
                 "Version": self._ver.group(),
-
                 # Resolve relative references
                 "ProjectPath": script_path,
                 "AWSAssetFile0": render_path,
-
                 # using GPU by default
                 "UseGpu": instance.data["attributeValues"].get(
-                    "use_gpu", self.use_gpu),
-
+                    "use_gpu", self.use_gpu
+                ),
                 # Only the specific write node is rendered.
-                "WriteNode": exe_node_name
+                "WriteNode": exe_node_name,
             },
-
             # Mandatory for Deadline, may be empty
-            "AuxFiles": []
+            "AuxFiles": [],
         }
 
         # Add workfile dependency.
@@ -306,21 +297,23 @@ class NukeSubmitDeadline(pyblish.api.InstancePlugin,
 
         # TODO: rewrite for baking with sequences
         if baking_submission:
-            payload["JobInfo"].update({
-                "JobType": "Normal",
-                "ChunkSize": 99999999
-            })
+            payload["JobInfo"].update(
+                {"JobType": "Normal", "ChunkSize": 99999999}
+            )
 
         if response_data.get("_id"):
-            payload["JobInfo"].update({
-                "BatchName": response_data["Props"]["Batch"],
-                "JobDependency0": response_data["_id"],
-            })
+            payload["JobInfo"].update(
+                {
+                    "BatchName": response_data["Props"]["Batch"],
+                    "JobDependency0": response_data["_id"],
+                }
+            )
 
         # Include critical environment variables with submission
         keys = [
             "NUKE_PATH",
-            "FOUNDRY_LICENSE"
+            "FOUNDRY_LICENSE",
+            "PHAROS_LOCATION",
         ]
 
         # add allowed keys from preset if any
@@ -328,9 +321,7 @@ class NukeSubmitDeadline(pyblish.api.InstancePlugin,
             keys += self.env_allowed_keys
 
         nuke_specific_env = {
-            key: os.environ[key]
-            for key in keys
-            if key in os.environ
+            key: os.environ[key] for key in keys if key in os.environ
         }
 
         # Set job environment variables
@@ -346,12 +337,14 @@ class NukeSubmitDeadline(pyblish.api.InstancePlugin,
                         item["name"], item["value"]
                     )
 
-        payload["JobInfo"].update({
-            "EnvironmentKeyValue%d" % index: "{key}={value}".format(
-                key=key,
-                value=environment[key]
-            ) for index, key in enumerate(environment)
-        })
+        payload["JobInfo"].update(
+            {
+                "EnvironmentKeyValue%d" % index: "{key}={value}".format(
+                    key=key, value=environment[key]
+                )
+                for index, key in enumerate(environment)
+            }
+        )
 
         plugin = payload["JobInfo"]["Plugin"]
         self.log.debug("using render plugin : {}".format(plugin))
@@ -559,8 +552,7 @@ class NukeSubmitDeadline(pyblish.api.InstancePlugin,
             # representation file. Will be added to expected files via
             # submit_publish_job.py
             if file in repre.get("files", []):
-                self.log.debug(
-                    "Skipping expected file: {}".format(filepath))
+                self.log.debug("Skipping expected file: {}".format(filepath))
                 return
 
         # in case path is hashed sequence expression
