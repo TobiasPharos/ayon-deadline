@@ -142,7 +142,7 @@ class NukeSubmitDeadline(
     def get_job_info(self, job_info=None, **kwargs):
         instance = self._instance
 
-        job_info.Plugin = "Nuke"
+        job_info.Plugin = "Nuke14"
 
         start_frame = int(instance.data["frameStartHandle"])
         end_frame = int(instance.data["frameEndHandle"])
