@@ -3,16 +3,18 @@
 import os
 import json
 import re
+import getpass
 from copy import deepcopy
+from typing import List, Any
 
 import clique
 import ayon_api
 import pyblish.api
 
-from ayon_core.pipeline import publish
-from ayon_core.lib import EnumDef, is_in_tests
-from ayon_core.pipeline.version_start import get_versioning_start
+from ayon_core.pipeline import publish, Anatomy
+from ayon_core.lib.path_templates import TemplateUnsolved
 
+from ayon_core.pipeline.version_start import get_versioning_start
 from ayon_core.pipeline.farm.pyblish_functions import (
     create_skeleton_instance,
     create_instances_for_aov,
@@ -20,7 +22,13 @@ from ayon_core.pipeline.farm.pyblish_functions import (
     prepare_representations,
     create_metadata_path
 )
-from ayon_deadline.abstract_submit_deadline import requests_post
+
+from ayon_deadline import DeadlineAddon
+from ayon_deadline.lib import (
+    JobType,
+    DeadlineJobInfo,
+    get_instance_job_envs,
+)
 
 
 def get_resource_files(resources, frame_range=None):
@@ -72,9 +80,6 @@ class ProcessSubmittedJobOnFarm(pyblish.api.InstancePlugin,
             in the output filename to be picked up for image sequence
             publishing.
 
-        - publishJobState (str, Optional): "Active" or "Suspended"
-            This defaults to "Suspended"
-
         - expectedFiles (list or dict): explained below
 
     """
@@ -85,16 +90,7 @@ class ProcessSubmittedJobOnFarm(pyblish.api.InstancePlugin,
 
     targets = ["local"]
 
-    hosts = ["fusion", "max", "maya", "nuke", "houdini",
-             "celaction", "aftereffects", "harmony", "blender", "unreal"]
-
-    families = ["render", "render.farm", "render.frames_farm",
-                "prerender", "prerender.farm", "prerender.frames_farm",
-                "renderlayer", "imagesequence", "image",
-                "vrayscene", "maxrender",
-                "arnold_rop", "mantra_rop",
-                "karma_rop", "vray_rop",
-                "redshift_rop", "usdrender"]
+    families = ["deadline.submit.publish.job"]
     settings_category = "deadline"
 
     aov_filter = [
@@ -125,21 +121,9 @@ class ProcessSubmittedJobOnFarm(pyblish.api.InstancePlugin,
         },
     ]
 
-    environ_keys = [
-        "FTRACK_API_USER",
-        "FTRACK_API_KEY",
-        "FTRACK_SERVER",
-        "AYON_APP_NAME",
-        "AYON_USERNAME",
-        "AYON_SG_USERNAME",
-        "KITSU_LOGIN",
-        "KITSU_PWD"
-    ]
-
     # custom deadline attributes
     deadline_department = ""
     deadline_pool = ""
-    deadline_pool_secondary = ""
     deadline_group = ""
     deadline_priority = None
 
@@ -156,13 +140,17 @@ class ProcessSubmittedJobOnFarm(pyblish.api.InstancePlugin,
     }
 
     # list of family names to transfer to new family if present
-    families_transfer = ["render3d", "render2d", "ftrack", "slate"]
-    plugin_pype_version = "3.0"
+    families_transfer = ["render3d", "render2d", "slate"]
 
     # poor man exclusion
     skip_integration_repre_list = []
 
-    def _submit_deadline_post_job(self, instance, job, instances):
+    add_rendered_dependencies = False
+
+
+    def _submit_deadline_post_job(
+        self, instance, render_job, instances, rootless_metadata_path
+    ):
         """Submit publish job to Deadline.
 
         Returns:
@@ -172,7 +160,8 @@ class ProcessSubmittedJobOnFarm(pyblish.api.InstancePlugin,
         product_name = data["productName"]
         job_name = "Publish - {}".format(product_name)
 
-        anatomy = instance.context.data['anatomy']
+        context = instance.context
+        anatomy = context.data["anatomy"]
 
         # instance.data.get("productName") != instances[0]["productName"]
         # 'Main' vs 'renderMain'
@@ -186,130 +175,109 @@ class ProcessSubmittedJobOnFarm(pyblish.api.InstancePlugin,
             deepcopy(instance.data["anatomyData"]),
             instance.data.get("folderEntity"),
             instances[0]["productName"],
-            instance.context,
+            context,
             instances[0]["productType"],
             override_version
         )
 
-        # Transfer the environment from the original job to this dependent
-        # job so they use the same environment
-        metadata_path, rootless_metadata_path = \
-            create_metadata_path(instance, anatomy)
+        environment = get_instance_job_envs(instance)
+        environment.update(JobType.PUBLISH.get_job_env())
 
-        settings_variant = os.environ["AYON_DEFAULT_SETTINGS_VARIANT"]
-        environment = {
-            "AYON_PROJECT_NAME": instance.context.data["projectName"],
-            "AYON_FOLDER_PATH": instance.context.data["folderPath"],
-            "AYON_TASK_NAME": instance.context.data["task"],
-            "AYON_USERNAME": instance.context.data["user"],
-            "AYON_LOG_NO_COLORS": "1",
-            "AYON_IN_TESTS": str(int(is_in_tests())),
-            "AYON_PUBLISH_JOB": "1",
-            "AYON_RENDER_JOB": "0",
-            "AYON_REMOTE_PUBLISH": "0",
-            "AYON_BUNDLE_NAME": os.environ["AYON_BUNDLE_NAME"],
-            "AYON_DEFAULT_SETTINGS_VARIANT": settings_variant,
-        }
+        priority = (
+            self.deadline_priority
+            or instance.data.get("priority", 50)
+        )
 
-        # add environments from self.environ_keys
-        for env_key in self.environ_keys:
-            if os.getenv(env_key):
-                environment[env_key] = os.environ[env_key]
-
-        priority = self.deadline_priority or instance.data.get("priority", 50)
-
-        instance_settings = self.get_attr_values_from_data(instance.data)
-        initial_status = instance_settings.get("publishJobState", "Active")
+        batch_name = self._get_batch_name(instance, render_job)
+        username = self._get_username(instance, render_job)
+        dependency_ids = self._get_dependency_ids(instance, render_job)
 
         args = [
             "--headless",
-            'publish',
-            '"{}"'.format(rootless_metadata_path),
+            "publish",
+            rootless_metadata_path,
             "--targets", "deadline",
             "--targets", "farm",
         ]
-        # TODO remove when AYON launcher respects environment variable
-        #   'AYON_DEFAULT_SETTINGS_VARIANT'
+        # TODO remove settings variant handling when not needed anymore
+        #   which should be when package.py defines 'core>1.1.1' .
+        settings_variant = os.environ["AYON_DEFAULT_SETTINGS_VARIANT"]
         if settings_variant == "staging":
             args.append("--use-staging")
+        elif settings_variant != "production":
+            args.extend(["--bundle", settings_variant])
 
-        # Generate the payload for Deadline submission
-        secondary_pool = (
-            self.deadline_pool_secondary or instance.data.get("secondaryPool")
+        server_name = instance.data["deadline"]["serverName"]
+        self.log.debug("Submitting Deadline publish job ...")
+
+        deadline_addon: DeadlineAddon = (
+            context.data["ayonAddonsManager"]["deadline"]
         )
-        payload = {
-            "JobInfo": {
-                "Plugin": "Ayon",
-                "BatchName": job["Props"]["Batch"],
-                "Name": job_name,
-                "UserName": job["Props"]["User"],
-                "Comment": instance.context.data.get("comment", ""),
 
-                "Department": self.deadline_department,
-                "ChunkSize": 1,
-                "Priority": priority,
-                "InitialStatus": initial_status,
+        job_info = instance.data["deadline"]["job_info"]
+        job_info = DeadlineJobInfo(
+            Name=job_name,
+            BatchName=batch_name,
+            Department=self.deadline_department,
+            Priority=priority,
+            InitialStatus=job_info.publish_job_state,
+            Group=self.deadline_group,
+            Pool=self.deadline_pool or None,
+            JobDependencies=dependency_ids,
+            UserName=username,
+            Comment=context.data.get("comment"),
+        )
+        if output_dir:
+            job_info.OutputDirectory.append(output_dir)
 
-                "Group": self.deadline_group,
-                "Pool": self.deadline_pool or instance.data.get("primaryPool"),
-                "SecondaryPool": secondary_pool,
-                # ensure the outputdirectory with correct slashes
-                "OutputDirectory0": output_dir.replace("\\", "/")
-            },
-            "PluginInfo": {
-                "Version": self.plugin_pype_version,
-                "Arguments": " ".join(args),
-                "SingleFrameOnly": "True",
-            },
-            # Mandatory for Deadline, may be empty
-            "AuxFiles": [],
-        }
+        job_info.EnvironmentKeyValue.update(environment)
 
-        # add assembly jobs as dependencies
+        if self.add_rendered_dependencies:
+            self._add_rendered_dependencies(anatomy, instances, job_info)
+
+        return deadline_addon.submit_ayon_plugin_job(
+            server_name,
+            args,
+            job_info
+        )["response"]["_id"]
+
+    def _get_batch_name(self, instance, render_job):
+        batch_name = instance.data.get("jobBatchName")
+        if not batch_name and render_job:
+            batch_name = render_job["Props"]["Batch"]
+
+        if not batch_name:
+            batch_name = os.path.splitext(os.path.basename(
+                instance.context.data["currentFile"]
+            ))[0]
+        return batch_name
+
+    def _get_username(self, instance, render_job):
+        username = None
+        if render_job:
+            username = render_job["Props"]["User"]
+
+        if not username:
+            username = instance.context.data.get(
+                "deadlineUser", getpass.getuser()
+            )
+        return username
+
+    def _get_dependency_ids(self, instance, render_job):
+        # Collect dependent jobs
         if instance.data.get("tileRendering"):
             self.log.info("Adding tile assembly jobs as dependencies...")
-            job_index = 0
-            for assembly_id in instance.data.get("assemblySubmissionJobs"):
-                payload["JobInfo"]["JobDependency{}".format(
-                    job_index)] = assembly_id  # noqa: E501
-                job_index += 1
-        elif instance.data.get("bakingSubmissionJobs"):
+            return instance.data.get("assemblySubmissionJobs")
+
+        if instance.data.get("bakingSubmissionJobs"):
             self.log.info(
                 "Adding baking submission jobs as dependencies..."
             )
-            job_index = 0
-            for assembly_id in instance.data["bakingSubmissionJobs"]:
-                payload["JobInfo"]["JobDependency{}".format(
-                    job_index)] = assembly_id  # noqa: E501
-                job_index += 1
-        elif job.get("_id"):
-            payload["JobInfo"]["JobDependency0"] = job["_id"]
+            return instance.data["bakingSubmissionJobs"]
 
-        for index, (key_, value_) in enumerate(environment.items()):
-            payload["JobInfo"].update(
-                {
-                    "EnvironmentKeyValue%d"
-                    % index: "{key}={value}".format(
-                        key=key_, value=value_
-                    )
-                }
-            )
-        # remove secondary pool
-        payload["JobInfo"].pop("SecondaryPool", None)
-
-        self.log.debug("Submitting Deadline publish job ...")
-
-        url = "{}/api/jobs".format(self.deadline_url)
-        auth = instance.data["deadline"]["auth"]
-        verify = instance.data["deadline"]["verify"]
-        response = requests_post(
-            url, json=payload, timeout=10, auth=auth, verify=verify)
-        if not response.ok:
-            raise Exception(response.text)
-
-        deadline_publish_job_id = response.json()["_id"]
-
-        return deadline_publish_job_id
+        if render_job and render_job.get("_id"):
+            return [render_job["_id"]]
+        return None
 
     def process(self, instance):
         # type: (pyblish.api.Instance) -> None
@@ -387,7 +355,8 @@ class ProcessSubmittedJobOnFarm(pyblish.api.InstancePlugin,
                 instance, instance_skeleton_data,
                 aov_filter,
                 self.skip_integration_repre_list,
-                do_not_add_review
+                do_not_add_review,
+                instance.data["deadline"]["job_info"].Frames
             )
         else:
             representations = prepare_representations(
@@ -398,7 +367,8 @@ class ProcessSubmittedJobOnFarm(pyblish.api.InstancePlugin,
                 self.skip_integration_repre_list,
                 do_not_add_review,
                 instance.context,
-                self
+                self,
+                instance.data["deadline"]["job_info"].Frames
             )
 
             if "representations" not in instance_skeleton_data.keys():
@@ -426,46 +396,24 @@ class ProcessSubmittedJobOnFarm(pyblish.api.InstancePlugin,
 
         render_job = instance.data.pop("deadlineSubmissionJob", None)
         if not render_job and instance.data.get("tileRendering") is False:
-            raise AssertionError(("Cannot continue without valid "
-                                  "Deadline submission."))
-        if not render_job:
-            import getpass
+            raise AssertionError(
+                "Cannot continue without valid Deadline submission."
+            )
 
-            render_job = {}
-            self.log.debug("Faking job data ...")
-            render_job["Props"] = {}
-            # Render job doesn't exist because we do not have prior submission.
-            # We still use data from it so lets fake it.
-            #
-            # Batch name reflect original scene name
+        # Transfer the environment from the original job to this dependent
+        # job so they use the same environment
+        metadata_path, rootless_metadata_path = create_metadata_path(
+            instance, anatomy
+        )
 
-            if instance.data.get("assemblySubmissionJobs"):
-                render_job["Props"]["Batch"] = instance.data.get(
-                    "jobBatchName")
-            else:
-                batch = os.path.splitext(os.path.basename(
-                    instance.context.data.get("currentFile")))[0]
-                render_job["Props"]["Batch"] = batch
-            # User is deadline user
-            render_job["Props"]["User"] = instance.context.data.get(
-                "deadlineUser", getpass.getuser())
-
-            render_job["Props"]["Env"] = {
-                "FTRACK_API_USER": os.environ.get("FTRACK_API_USER"),
-                "FTRACK_API_KEY": os.environ.get("FTRACK_API_KEY"),
-                "FTRACK_SERVER": os.environ.get("FTRACK_SERVER"),
-            }
-
-        # get default deadline webservice url from deadline module
-        self.deadline_url = instance.data["deadline"]["url"]
-        assert self.deadline_url, "Requires Deadline Webservice URL"
-
-        deadline_publish_job_id = \
-            self._submit_deadline_post_job(instance, render_job, instances)
+        deadline_publish_job_id = self._submit_deadline_post_job(
+            instance, render_job, instances, rootless_metadata_path
+        )
 
         # Inject deadline url to instances to query DL for job id for overrides
         for inst in instances:
-            inst["deadline"] = instance.data["deadline"]
+            inst["deadline"] = deepcopy(instance.data["deadline"])
+            inst["deadline"].pop("job_info")
 
         # publish job file
         publish_job = {
@@ -475,12 +423,21 @@ class ProcessSubmittedJobOnFarm(pyblish.api.InstancePlugin,
             "fps": instance_skeleton_data["fps"],
             "source": instance_skeleton_data["source"],
             "user": instance.context.data["user"],
-            "version": instance.context.data["version"],  # workfile version
             "intent": instance.context.data.get("intent"),
             "comment": instance.context.data.get("comment"),
-            "job": render_job or None,
+            "job": render_job or {},
             "instances": instances
         }
+
+        # Note that a version of 0 is a valid version number,
+        # so we explicitly check for `None` value
+        # instance override version
+        collected_version = instance.data.get("version")
+        if collected_version is None:
+            # workfile version
+            collected_version = instance.context.data.get("version")
+        if collected_version is not None:
+            publish_job["version"] = collected_version
 
         if deadline_publish_job_id:
             publish_job["deadline_publish_job_id"] = deadline_publish_job_id
@@ -490,15 +447,20 @@ class ProcessSubmittedJobOnFarm(pyblish.api.InstancePlugin,
         if audio_file and os.path.isfile(audio_file):
             publish_job.update({"audio": audio_file})
 
-        metadata_path, rootless_metadata_path = \
-            create_metadata_path(instance, anatomy)
-
+        self.log.debug(f"Writing metadata json to '{metadata_path}'")
         with open(metadata_path, "w") as f:
             json.dump(publish_job, f, indent=4, sort_keys=True)
 
-    def _get_publish_folder(self, anatomy, template_data,
-                            folder_entity, product_name, context,
-                            product_type, version=None):
+    def _get_publish_folder(
+        self,
+        anatomy,
+        template_data,
+        folder_entity,
+        product_name,
+        context,
+        product_type,
+        version=None
+    ):
         """
             Extracted logic to pre-calculate real publish folder, which is
             calculated in IntegrateNew inside of Deadline process.
@@ -521,11 +483,10 @@ class ProcessSubmittedJobOnFarm(pyblish.api.InstancePlugin,
             version (int): override version from instance if exists
 
         Returns:
-            (string): publish folder where rendered and published files will
-                be stored
-                based on 'publish' template
-        """
+            Optional[str]: publish folder where rendered and published files
+                will be stored based on 'publish' template
 
+        """
         project_name = context.data["projectName"]
         host_name = context.data["hostName"]
         if not version:
@@ -572,13 +533,39 @@ class ProcessSubmittedJobOnFarm(pyblish.api.InstancePlugin,
         render_dir_template = anatomy.get_template_item(
             "publish", template_name, "directory"
         )
-        return render_dir_template.format_strict(template_data)
+        try:
+            return (
+                render_dir_template
+                .format_strict(template_data)
+                .replace("\\", "/")
+            )
 
-    @classmethod
-    def get_attribute_defs(cls):
-        return [
-            EnumDef("publishJobState",
-                    label="Publish Job State",
-                    items=["Active", "Suspended"],
-                    default="Active")
-        ]
+        except TemplateUnsolved:
+            self.log.error(
+                "Publish directory template is unsolved for: "
+                f"{template_name} in anatomy. Output directory won't be set."
+            )
+
+    def _add_rendered_dependencies(
+        self,
+        anatomy: Anatomy,
+        instances: List[dict[str, Any]],
+        job_info: DeadlineJobInfo,
+    ) -> None:
+        """Adds all expected rendered files as Job dependencies.
+
+        This should help when DL file system is still synchronizing rendered
+        files, but publish job starts prematurely.
+        """
+        for instance in instances:
+            for representation in instance["representations"]:
+                if isinstance(representation["files"], str):
+                    files = [representation["files"]]
+                else:
+                    files = representation["files"]
+                for file_name in files:
+                    full_path = os.path.join(
+                        representation["stagingDir"], file_name
+                    )
+                    full_path = anatomy.fill_root(full_path)
+                    job_info.AssetDependency += full_path

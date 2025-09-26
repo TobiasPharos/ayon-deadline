@@ -2,118 +2,118 @@
 """Submitting render job to Deadline."""
 
 import os
-import getpass
-import attr
-from datetime import datetime
+from dataclasses import dataclass, field, asdict
 
-from ayon_core.lib import (
-    BoolDef,
-    NumberDef,
-    TextDef,
-    is_in_tests,
-)
-from ayon_core.pipeline.publish import AYONPyblishPluginMixin
+from ayon_core.pipeline.publish import AYONPyblishPluginMixin, PublishError
 from ayon_core.pipeline.farm.tools import iter_expected_files
 
 from ayon_deadline import abstract_submit_deadline
-from ayon_deadline.abstract_submit_deadline import DeadlineJobInfo
 
 
-@attr.s
-class BlenderPluginInfo():
-    SceneFile = attr.ib(default=None)   # Input
-    Version = attr.ib(default=None)  # Mandatory for Deadline
-    SaveFile = attr.ib(default=True)
+@dataclass
+class BlenderPluginInfo:
+    SceneFile: str = field(default=None)   # Input
+    Version: str = field(default=None)  # Mandatory for Deadline
+    SaveFile: bool = field(default=True)
 
 
 class BlenderSubmitDeadline(abstract_submit_deadline.AbstractSubmitDeadline,
                             AYONPyblishPluginMixin):
     label = "Submit Render to Deadline"
     hosts = ["blender"]
-    families = ["render"]
+    families = ["render"]  # TODO this should be farm specific as render.farm
     settings_category = "deadline"
 
-    use_published = True
-    priority = 50
-    chunk_size = 1
-    jobInfo = {}
-    pluginInfo = {}
-    group = None
-    job_delay = "00:00:00:00"
+    def process(self, instance):
+        if not instance.data.get("farm"):
+            self.log.debug("Render on farm is disabled. "
+                           "Skipping deadline submission.")
+            return
 
-    def get_job_info(self):
-        job_info = DeadlineJobInfo(Plugin="Blender")
+        # Always set instance output directory to the expected
+        expected_files = instance.data["expectedFiles"]
+        if not expected_files:
+            raise PublishError(
+                message="No Render Elements found.",
+                title="No Render Elements found.",
+                description="Expected files for render elements are empty."
+            )
 
-        job_info.update(self.jobInfo)
+        first_file = next(iter_expected_files(expected_files))
+        output_dir = os.path.dirname(first_file)
+        instance.data["outputDir"] = output_dir
+        instance.data["toBeRenderedOn"] = "deadline"
 
-        instance = self._instance
+        # We are submitting a farm job not per instance - but once per Blender
+        # scene. This is a hack to avoid submitting multiple jobs for each
+        # comp file output because the Deadline job will always render all
+        # active ones anyway (and the relevant view layers).
         context = instance.context
+        key = f"__hasRun{self.__class__.__name__}"
+        if context.data.get(key, False):
+            return
 
-        # Always use the original work file name for the Job name even when
-        # rendering is done from the published Work File. The original work
-        # file name is clearer because it can also have subversion strings,
-        # etc. which are stripped for the published file.
-        src_filepath = context.data["currentFile"]
-        src_filename = os.path.basename(src_filepath)
+        context.data[key] = True
 
-        if is_in_tests():
-            src_filename += datetime.now().strftime("%d%m%Y%H%M%S")
+        # Collect all saver instances in context that are to be rendered
+        render_instances = []
+        for inst in context:
+            if inst.data["productType"] != "render":
+                # Allow only render instances
+                continue
 
-        job_info.Name = f"{src_filename} - {instance.name}"
-        job_info.BatchName = src_filename
-        instance.data.get("blenderRenderPlugin", "Blender")
-        job_info.UserName = context.data.get("deadlineUser", getpass.getuser())
+            if not inst.data.get("publish", True):
+                # Skip inactive instances
+                continue
 
-        # Deadline requires integers in frame range
-        frames = "{start}-{end}x{step}".format(
-            start=int(instance.data["frameStartHandle"]),
-            end=int(instance.data["frameEndHandle"]),
-            step=int(instance.data["byFrameStep"]),
-        )
-        job_info.Frames = frames
+            if not inst.data.get("farm"):
+                # Only consider instances that are also set to be rendered on
+                # farm
+                continue
 
-        job_info.Pool = instance.data.get("primaryPool")
-        job_info.SecondaryPool = instance.data.get("secondaryPool")
-        job_info.Comment = instance.data.get("comment")
+            render_instances.append(inst)
 
-        if self.group != "none" and self.group:
-            job_info.Group = self.group
+        if not render_instances:
+            raise PublishError("No instances found for Deadline submission")
 
-        attr_values = self.get_attr_values_from_data(instance.data)
-        render_globals = instance.data.setdefault("renderGlobals", {})
-        machine_list = attr_values.get("machineList", "")
-        if machine_list:
-            if attr_values.get("whitelist", True):
-                machine_list_key = "Whitelist"
-            else:
-                machine_list_key = "Blacklist"
-            render_globals[machine_list_key] = machine_list
+        instance.data["_farmRenderInstances"] = render_instances
 
-        job_info.ChunkSize = attr_values.get("chunkSize", self.chunk_size)
-        job_info.Priority = attr_values.get("priority", self.priority)
-        job_info.ScheduledType = "Once"
-        job_info.JobDelay = attr_values.get("job_delay", self.job_delay)
+        super().process(instance)
 
-        # Add options from RenderGlobals
-        render_globals = instance.data.get("renderGlobals", {})
-        job_info.update(render_globals)
+        # Store the response for dependent job submission plug-ins for all
+        # the instances
+        transfer_keys = ["deadlineSubmissionJob", "deadline"]
+        for render_instance in render_instances:
+            for key in transfer_keys:
+                render_instance.data[key] = instance.data[key]
 
-        # Set job environment variables
-        job_info.add_instance_job_env_vars(self._instance)
-        job_info.add_render_job_env_var()
+        # Remove this data which we only added to get access to the data
+        # in the inherited `self.get_job_info()` method.
+        instance.data.pop("_farmRenderInstances", None)
 
-        # Adding file dependencies.
-        if self.asset_dependencies:
-            dependencies = instance.context.data["fileDependencies"]
-            for dependency in dependencies:
-                job_info.AssetDependency += dependency
+    def get_job_info(self, job_info=None, **kwargs):
+        instance = self._instance
+        job_info.Plugin = instance.data.get("blenderRenderPlugin", "Blender")
 
-        # Add list of expected files to job
-        # ---------------------------------
-        exp = instance.data.get("expectedFiles")
-        for filepath in iter_expected_files(exp):
-            job_info.OutputDirectory += os.path.dirname(filepath)
-            job_info.OutputFilename += os.path.basename(filepath)
+        # already collected explicit values for rendered Frames
+        if not job_info.Frames:
+            # Deadline requires integers in frame range
+            frames = "{start}-{end}x{step}".format(
+                start=int(instance.data["frameStartHandle"]),
+                end=int(instance.data["frameEndHandle"]),
+                step=int(instance.data["byFrameStep"]),
+            )
+            job_info.Frames = frames
+
+        # We override the default behavior of AbstractSubmitDeadline here to
+        # include the output directory and output filename for each individual
+        # render instance, instead of only the current instance, because we're
+        # submitting one job for multiple render instances.
+        for render_instance in instance.data["_farmRenderInstances"]:
+            if render_instance is instance:
+                continue
+
+            self._append_job_output_paths(render_instance, job_info)
 
         return job_info
 
@@ -127,32 +127,17 @@ class BlenderSubmitDeadline(abstract_submit_deadline.AbstractSubmitDeadline,
             SaveFile=True,
         )
 
-        plugin_payload = attr.asdict(plugin_info)
-
-        # Patching with pluginInfo from settings
-        for key, value in self.pluginInfo.items():
-            plugin_payload[key] = value
+        plugin_payload = asdict(plugin_info)
 
         return plugin_payload
 
     def process_submission(self, auth=None):
-        instance = self._instance
-
-        expected_files = instance.data["expectedFiles"]
-        if not expected_files:
-            raise RuntimeError("No Render Elements found!")
-
-        first_file = next(iter_expected_files(expected_files))
-        output_dir = os.path.dirname(first_file)
-        instance.data["outputDir"] = output_dir
-        instance.data["toBeRenderedOn"] = "deadline"
-
         payload = self.assemble_payload()
         auth = self._instance.data["deadline"]["auth"]
         verify = self._instance.data["deadline"]["verify"]
         return self.submit(payload, auth=auth, verify=verify)
 
-    def from_published_scene(self):
+    def from_published_scene(self, replace_in_path=True):
         """
         This is needed to set the correct path for the json metadata. Because
         the rendering path is set in the blend file during the collection,
@@ -160,39 +145,3 @@ class BlenderSubmitDeadline(abstract_submit_deadline.AbstractSubmitDeadline,
         the metadata and the rendered files are in the same location.
         """
         return super().from_published_scene(False)
-
-    @classmethod
-    def get_attribute_defs(cls):
-        defs = super(BlenderSubmitDeadline, cls).get_attribute_defs()
-        defs.extend([
-            BoolDef("use_published",
-                    default=cls.use_published,
-                    label="Use Published Scene"),
-
-            NumberDef("priority",
-                      minimum=1,
-                      maximum=250,
-                      decimals=0,
-                      default=cls.priority,
-                      label="Priority"),
-
-            NumberDef("chunkSize",
-                      minimum=1,
-                      maximum=50,
-                      decimals=0,
-                      default=cls.chunk_size,
-                      label="Frame Per Task"),
-
-            TextDef("group",
-                    default=cls.group,
-                    label="Group Name"),
-
-            TextDef("job_delay",
-                    default=cls.job_delay,
-                    label="Job Delay",
-                    placeholder="dd:hh:mm:ss",
-                    tooltip="Delay the job by the specified amount of time. "
-                            "Timecode: dd:hh:mm:ss."),
-        ])
-
-        return defs

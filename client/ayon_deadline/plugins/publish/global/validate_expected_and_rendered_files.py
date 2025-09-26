@@ -1,10 +1,11 @@
 import os
-import requests
+from collections.abc import Iterable
 
 import pyblish.api
+import clique
 
-from ayon_core.lib import collect_frames
-from ayon_deadline.abstract_submit_deadline import requests_get
+from ayon_core.pipeline import PublishValidationError
+from ayon_core.lib.transcoding import IMAGE_EXTENSIONS
 
 
 class ValidateExpectedFiles(pyblish.api.InstancePlugin):
@@ -22,6 +23,9 @@ class ValidateExpectedFiles(pyblish.api.InstancePlugin):
 
     def process(self, instance):
         """Process all the nodes in the instance"""
+        if instance.data.get("hasExplicitFrames"):
+            self.log.debug("Explicit frames rendered, skipping check")
+            return
 
         # get dependency jobs ids for retrieving frame list
         dependent_job_ids = self._get_dependent_job_ids(instance)
@@ -39,45 +43,13 @@ class ValidateExpectedFiles(pyblish.api.InstancePlugin):
             expected_files = self._get_expected_files(repre)
 
             staging_dir = repre["stagingDir"]
+            self.log.debug(f"Validating files in directory: {staging_dir}")
             existing_files = self._get_existing_files(staging_dir)
 
-            if self.allow_user_override:
-                # We always check for user override because the user might have
-                # also overridden the Job frame list to be longer than the
-                # originally submitted frame range
-                # todo: We should first check if Job frame range was overridden
-                #       at all so we don't unnecessarily override anything
-                file_name_template, frame_placeholder = \
-                    self._get_file_name_template_and_placeholder(
-                        expected_files)
-
-                if not file_name_template:
-                    raise RuntimeError("Unable to retrieve file_name template"
-                                       "from files: {}".format(expected_files))
-
-                job_expected_files = self._get_job_expected_files(
-                    file_name_template,
-                    frame_placeholder,
-                    frame_list)
-
-                job_files_diff = job_expected_files.difference(expected_files)
-                if job_files_diff:
-                    self.log.debug(
-                        "Detected difference in expected output files from "
-                        "Deadline job. Assuming an updated frame list by the "
-                        "user. Difference: {}".format(sorted(job_files_diff))
-                    )
-
-                    # Update the representation expected files
-                    self.log.info("Update range from actual job range "
-                                  "to frame list: {}".format(frame_list))
-                    # single item files must be string not list
-                    repre["files"] = (sorted(job_expected_files)
-                                      if len(job_expected_files) > 1 else
-                                      list(job_expected_files)[0])
-
-                    # Update the expected files
-                    expected_files = job_expected_files
+            is_image = f'.{repre["ext"]}' in IMAGE_EXTENSIONS
+            if self.allow_user_override and is_image:
+                expected_files = self._recalculate_expected_files(
+                    expected_files, frame_list, repre)
 
             # We don't use set.difference because we do allow other existing
             # files to be in the folder that we might not want to use.
@@ -92,6 +64,36 @@ class ValidateExpectedFiles(pyblish.api.InstancePlugin):
                         sorted(existing_files)
                     )
                 )
+
+    def _recalculate_expected_files(self, expected_files, frame_list, repre):
+        # We always check for user override because the user might have
+        # also overridden the Job frame list to be longer than the
+        # originally submitted frame range
+        # todo: We should first check if Job frame range was overridden
+        #       at all so we don't unnecessarily override anything
+        collection_or_filename = self._get_collection(expected_files)
+        job_expected_files = self._get_job_expected_files(
+            collection_or_filename, frame_list)
+
+        job_files_diff = job_expected_files.difference(expected_files)
+        if job_files_diff:
+            self.log.debug(
+                "Detected difference in expected output files from "
+                "Deadline job. Assuming an updated frame list by the "
+                "user. Difference: {}".format(sorted(job_files_diff))
+            )
+
+            # Update the representation expected files
+            self.log.info("Update range from actual job range "
+                          "to frame list: {}".format(frame_list))
+            # single item files must be string not list
+            repre["files"] = (sorted(job_expected_files)
+                              if len(job_expected_files) > 1 else
+                              list(job_expected_files)[0])
+
+            # Update the expected files
+            expected_files = job_expected_files
+        return expected_files
 
     def _get_dependent_job_ids(self, instance):
         """Returns list of dependent job ids from instance metadata.json
@@ -139,52 +141,60 @@ class ValidateExpectedFiles(pyblish.api.InstancePlugin):
         return all_frame_lists
 
     def _get_job_expected_files(self,
-                                file_name_template,
-                                frame_placeholder,
+                                collection_or_filename,
                                 frame_list):
         """Calculates list of names of expected rendered files.
 
         Might be different from expected files from submission if user
         explicitly and manually changed the frame list on the Deadline job.
 
+        Returns:
+            set: Set of expected file names in the staging directory.
+
         """
         # no frames in file name at all, eg 'renderCompositingMain.withLut.mov'
-        if not frame_placeholder:
-            return {file_name_template}
+        # so it is a single file
+        if isinstance(collection_or_filename, str):
+            return {collection_or_filename}
 
-        real_expected_rendered = set()
-        src_padding_exp = "%0{}d".format(len(frame_placeholder))
+        # Define all frames from the frame list
+        all_frames = set()
         for frames in frame_list:
             if '-' not in frames:  # single frame
                 frames = "{}-{}".format(frames, frames)
 
             start, end = frames.split('-')
-            for frame in range(int(start), int(end) + 1):
-                ren_name = file_name_template.replace(
-                    frame_placeholder, src_padding_exp % frame)
-                real_expected_rendered.add(ren_name)
+            all_frames.update(iter(range(int(start), int(end) + 1)))
 
-        return real_expected_rendered
+        # Return all filename for the collection with the new frames
+        collection: clique.Collection = collection_or_filename
+        collection.indexes.clear()
+        collection.indexes.update(all_frames)
+        return set(collection)  # return list of filenames
 
-    def _get_file_name_template_and_placeholder(self, files):
-        """Returns file name with frame replaced with # and this placeholder"""
-        sources_and_frames = collect_frames(files)
+    def _get_collection(self, files) -> "Iterable[str]":
+        """Returns sequence collection or a single filepath.
 
-        file_name_template = frame_placeholder = None
-        for file_name, frame in sources_and_frames.items():
+        Arguments:
+            files (Iterable[str]): Filenames to retrieve the collection from.
+                If not a sequence detected it will return the single file path.
 
-            # There might be cases where clique was unable to collect
-            # collections in `collect_frames` - thus we capture that case
-            if frame is not None:
-                frame_placeholder = "#" * len(frame)
-
-                file_name_template = os.path.basename(
-                    file_name.replace(frame, frame_placeholder))
-            else:
-                file_name_template = file_name
-            break
-
-        return file_name_template, frame_placeholder
+        Returns:
+            clique.Collection | str: Sequence collection or single file path
+        """
+        # todo: we may need this pattern to stay in sync with the
+        #  implementation in `ayon_core.lib.collect_frames`
+        # clique.PATTERNS["frames"] supports only `.1001.exr` not `_1001.exr`
+        # so we use a customized pattern.
+        pattern = "[_.](?P<index>(?P<padding>0*)\\d+)\\.\\D+\\d?$"
+        patterns = [pattern]
+        collections, remainder = clique.assemble(
+            files, minimum_items=1, patterns=patterns)
+        if collections:
+            return collections[0]
+        else:
+            # No sequence detected, we assume single frame
+            return remainder[0]
 
     def _get_job_info(self, instance, job_id):
         """Calls DL for actual job info for 'job_id'
@@ -200,31 +210,15 @@ class ValidateExpectedFiles(pyblish.api.InstancePlugin):
             (dict): Job info from Deadline
 
         """
-        deadline_url = instance.data["deadline"]["url"]
-        assert deadline_url, "Requires Deadline Webservice URL"
+        server_name = instance.data["deadline"]["serverName"]
+        if not server_name:
+            raise PublishValidationError(
+                "Deadline server name is not filled."
+            )
 
-        url = "{}/api/jobs?JobID={}".format(deadline_url, job_id)
-        try:
-            kwargs = {}
-            auth = instance.data["deadline"]["auth"]
-            if auth:
-                kwargs["auth"] = auth
-            response = requests_get(url, **kwargs)
-        except requests.exceptions.ConnectionError:
-            self.log.error("Deadline is not accessible at "
-                           "{}".format(deadline_url))
-            return {}
-
-        if not response.ok:
-            self.log.error("Submission failed!")
-            self.log.error(response.status_code)
-            self.log.error(response.content)
-            raise RuntimeError(response.text)
-
-        json_content = response.json()
-        if json_content:
-            return json_content.pop()
-        return {}
+        addons_manager = instance.context.data["ayonAddonsManager"]
+        deadline_addon = addons_manager["deadline"]
+        return deadline_addon.get_job_info(server_name, job_id)
 
     def _get_existing_files(self, staging_dir):
         """Returns set of existing file names from 'staging_dir'"""
