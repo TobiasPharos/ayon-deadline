@@ -447,6 +447,13 @@ def inject_ayon_environment(deadlinePlugin):
 
         ayon_server_url, ayon_api_key = handle_credentials(job)
 
+        # Remove when Deadline Remote Connection Server is set up!
+        api_key_path = "//blackhole/media/vfx/libs/ayonlib/deadline/api.txt"
+        if os.path.isfile(api_key_path):    
+            with open(api_key_path, "r") as file:
+                ayon_api_key = file.readline().strip()
+        # --------------------------------------------------------
+
         site_id = os.environ.get("AYON_SITE_ID")
         shared_env_group = None
         if site_id:
@@ -651,6 +658,8 @@ def _extract_environments(
         "AYON_SERVER_URL": ayon_server_url,
         "AYON_API_KEY": ayon_api_key,
         "AYON_BUNDLE_NAME": ayon_bundle_name,
+        "AYON_LAUNCHER_STORAGE_DIR": "//blackhole/media/vfx/libs/ayonlib/_distro",
+        "PHAROS_HOUDINILIB": "//blackhole/media/vfx/libs/houdinilib",
     }
 
     for key in ("AYON_USE_STAGING", "AYON_IN_TESTS"):
