@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 
 from System.IO import Path
 from System.Text.RegularExpressions import Regex
@@ -38,7 +37,7 @@ class AyonDeadlinePlugin(DeadlinePlugin):
         for publish process.
     """
     def __init__(self):
-        super().__init__()
+        super(AyonDeadlinePlugin, self).__init__()
         self.InitializeProcessCallback += self.InitializeProcess
         self.RenderExecutableCallback += self.RenderExecutable
         self.RenderArgumentCallback += self.RenderArgument
