@@ -652,7 +652,7 @@ def _extract_environments(
         args.append("--use-staging")
 
     for key, value in add_kwargs.items():
-        args.extend([f"--{key}", value])
+        args.extend(["--{}".format(key), value])
 
     environment = {
         "AYON_SERVER_URL": ayon_server_url,
@@ -765,13 +765,15 @@ def handle_credentials(job):
             print(">>> Using API key from Additional AYON Servers.")
         else:
             print(
-                ">>> AYON Server URL submitted with job "
-                f"'{job_ayon_server_url}' has no API key defined "
+                (">>> AYON Server URL submitted with job "
+                "'{}' has no API key defined "
                 "in AYON Deadline plugin configuration,"
                 " `Additional AYON Servers` section."
                 " Use Deadline monitor to modify the values."
                 "Falling back to `AYON API key` set in `AYON Credentials`"
-                " section of AYON plugin configuration."
+                " section of AYON plugin configuration.").format(
+                    job_ayon_server_url
+                )
             )
         ayon_server_url = job_ayon_server_url
     if not all([ayon_server_url, ayon_api_key]):
@@ -797,7 +799,7 @@ def _get_ayon_api_key_from_additional_servers(config, server):
             then return the API key for that server.
 
     """
-    additional_servers: str = config.GetConfigEntryWithDefault(
+    additional_servers = config.GetConfigEntryWithDefault(
         "AyonAdditionalServerUrls", "").strip()
     if not additional_servers:
         return
@@ -814,8 +816,8 @@ def _get_ayon_api_key_from_additional_servers(config, server):
         # Log warning if additional server URL is misconfigured
         # without an API key
         if "@" not in line:
-            print("Configured additional server URL lacks "
-                  f"`@APIKEY` suffix: {line}")
+            print(("Configured additional server URL lacks "
+                   "`@APIKEY` suffix: {}").format(line))
             continue
 
         additional_server, api_key = line.split("@", 1)
