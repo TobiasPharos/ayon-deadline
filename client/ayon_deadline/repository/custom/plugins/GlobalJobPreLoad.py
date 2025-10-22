@@ -1,4 +1,4 @@
-# /usr/bin/env python3
+#!/usr/bin/env python2
 # -*- coding: utf-8 -*-
 import os
 import tempfile
@@ -30,7 +30,7 @@ VERSION_REGEX = re.compile(
 EXTRACT_ENVIRONMENT_TIMEOUT = 30
 
 
-class OpenPypeVersion:
+class OpenPypeVersion(object):
     """Fake semver version class for OpenPype version purposes.
 
     The version
@@ -106,7 +106,7 @@ class OpenPypeVersion:
             return self.major == other.major and self.minor == other.minor
         return False
 
-    def __bool__(self):
+    def __nonzero__(self):
         return self.is_valid
 
     def __repr__(self):
@@ -395,7 +395,7 @@ def inject_openpype_environment(deadlinePlugin):
         if "PATH" in contents:
             # Set os.environ[PATH] so studio settings' path entries
             # can be used to define search path for executables.
-            print(f">>> Setting 'PATH' Environment to: {contents['PATH']}")
+            print(">>> Setting 'PATH' Environment to: {}".format(contents['PATH']))
             os.environ["PATH"] = contents["PATH"]
 
         script_url = job.GetJobPluginInfoKeyValue("ScriptFilename")
@@ -447,11 +447,18 @@ def inject_ayon_environment(deadlinePlugin):
 
         ayon_server_url, ayon_api_key = handle_credentials(job)
 
+        # Remove when Deadline Remote Connection Server is set up!
+        api_key_path = "//blackhole/media/vfx/libs/ayonlib/deadline/api.txt"
+        if os.path.isfile(api_key_path):    
+            with open(api_key_path, "r") as file:
+                ayon_api_key = file.readline().strip()
+        # --------------------------------------------------------
+
         site_id = os.environ.get("AYON_SITE_ID")
         shared_env_group = None
         if site_id:
-            hash_base = f"{site_id}|{getpass.getuser()}"
-            hash_sha256 = sha256(hash_base.encode())
+            hash_base = "{}|{}".format(site_id, getpass.getuser())
+            hash_sha256 = sha256(hash_base.encode('utf-8'))
             shared_env_group = hash_sha256.hexdigest()[-10:]
         # drive caching of environment variables with env var
         # it is recommended to use same value AYON_SITE_ID for 'same'
@@ -459,7 +466,7 @@ def inject_ayon_environment(deadlinePlugin):
         if shared_env_group:
             print(">>> Caching of environment file will be used.")
             output_dir = _get_output_dir(job)
-            environment_file_name = f"env_{job.JobId}_{shared_env_group}.json"
+            environment_file_name = "env_{}_{}.json".format(job.JobId, shared_env_group)
             export_dir_url = os.path.join(
                 output_dir,
                 ".ayon_env_cache"
@@ -481,11 +488,8 @@ def inject_ayon_environment(deadlinePlugin):
             export_path = os.path.join(tempfile.gettempdir(), temp_file_name)
 
         if not os.path.exists(export_path):
-            print(
-                f">>> '{export_path}' with extracted environment doesn't "
-                "exist yet, running extraction process..."
-            )
-            temp_export_path = f"{export_path}.tmp"
+            print(">>> '{}' with extracted environment doesn't exist yet, running extraction process...".format(export_path))
+            temp_export_path = "{}.tmp".format(export_path)
             with open(temp_export_path, "w"):
                 pass
             try:
@@ -500,13 +504,13 @@ def inject_ayon_environment(deadlinePlugin):
                 )
                 if (not os.path.exists(export_path) and
                         os.path.exists(temp_export_path)):
-                    print(f"Creating env var file {export_path}")
+                    print("Creating env var file {}".format(export_path))
                     os.rename(temp_export_path, export_path)
             finally:
                 if os.path.exists(temp_export_path):
                     os.remove(temp_export_path)
 
-        print(f">>> Loading file '{export_path}' ...")
+        print(">>> Loading file '{}' ...".format(export_path))
         with open(export_path) as fp:
             contents = json.load(fp)
 
@@ -516,7 +520,7 @@ def inject_ayon_environment(deadlinePlugin):
         if "PATH" in contents:
             # Set os.environ[PATH] so studio settings' path entries
             # can be used to define search path for executables.
-            print(f">>> Setting 'PATH' Environment to: {contents['PATH']}")
+            print(">>> Setting 'PATH' Environment to: {}".format(contents['PATH']))
             os.environ["PATH"] = contents["PATH"]
 
         script_url = job.GetJobPluginInfoKeyValue("ScriptFilename")
@@ -545,7 +549,7 @@ def _wait_for_in_progress(job, export_path):
         (RuntimeError) if extraction takes more
             than EXTRACT_ENVIRONMENT_TIMEOUT seconds
     """
-    export_in_progress_path = f"{export_path}.tmp"
+    export_in_progress_path = "{}.tmp".format(export_path)
     timeout = int(
         job.GetJobEnvironmentKeyValue("AYON_EXTRACT_ENVIRONMENT_TIMEOUT")
         or EXTRACT_ENVIRONMENT_TIMEOUT
@@ -558,15 +562,14 @@ def _wait_for_in_progress(job, export_path):
         if date_diff > timedelta(seconds=timeout):
             print(
                 "Previous extract environment process stuck for "
-                f"'{timeout}' sec. Starting it from scratch."
+                "'{}' sec. Starting it from scratch.".format(timeout)
             )
             try:
                 os.remove(export_in_progress_path)
                 break
             except (OSError, PermissionError):
                 raise RuntimeError(
-                    f"Failed to remove progress file "
-                    f"'{export_in_progress_path}'."
+                    "Failed to remove progress file '{}'".format(export_in_progress_path)
                 )
         print("Extract environment process already triggered, waiting")
         sleep(2)
@@ -603,7 +606,7 @@ def _extract_environments(
     job
 ):
     """Calls `applications.extractenvironments` cli to get farm based envs."""
-    print(f">>> Extracting environments to: {export_path}")
+    print(">>> Extracting environments to: {}".format(export_path))
 
     add_kwargs = {
         "envgroup": "farm",
@@ -649,12 +652,15 @@ def _extract_environments(
         args.append("--use-staging")
 
     for key, value in add_kwargs.items():
-        args.extend([f"--{key}", value])
+        args.extend(["--{}".format(key), value])
 
     environment = {
         "AYON_SERVER_URL": ayon_server_url,
         "AYON_API_KEY": ayon_api_key,
         "AYON_BUNDLE_NAME": ayon_bundle_name,
+        "AYON_LAUNCHER_STORAGE_DIR": "//blackhole/media/vfx/libs/ayonlib/_distro",
+        "PHAROS_HOUDINILIB": "//blackhole/media/vfx/libs/houdinilib",
+        "PYTHONPATH": os.getenv("PYTHONPATH", "")
     }
 
     for key in ("AYON_USE_STAGING", "AYON_IN_TESTS"):
@@ -669,7 +675,7 @@ def _extract_environments(
         deadlinePlugin.SetProcessEnvironmentVariable(env, val)
 
     args_str = subprocess.list2cmdline(args)
-    print(f">>> Executing: {exe} {args_str}")
+    print(">>> Executing: {} {}".format(exe, args_str))
     _process_exitcode = deadlinePlugin.RunProcess(
         exe, args_str, os.path.dirname(exe), -1
     )
@@ -760,13 +766,15 @@ def handle_credentials(job):
             print(">>> Using API key from Additional AYON Servers.")
         else:
             print(
-                ">>> AYON Server URL submitted with job "
-                f"'{job_ayon_server_url}' has no API key defined "
+                (">>> AYON Server URL submitted with job "
+                "'{}' has no API key defined "
                 "in AYON Deadline plugin configuration,"
                 " `Additional AYON Servers` section."
                 " Use Deadline monitor to modify the values."
                 "Falling back to `AYON API key` set in `AYON Credentials`"
-                " section of AYON plugin configuration."
+                " section of AYON plugin configuration.").format(
+                    job_ayon_server_url
+                )
             )
         ayon_server_url = job_ayon_server_url
     if not all([ayon_server_url, ayon_api_key]):
@@ -792,7 +800,7 @@ def _get_ayon_api_key_from_additional_servers(config, server):
             then return the API key for that server.
 
     """
-    additional_servers: str = config.GetConfigEntryWithDefault(
+    additional_servers = config.GetConfigEntryWithDefault(
         "AyonAdditionalServerUrls", "").strip()
     if not additional_servers:
         return
@@ -809,8 +817,8 @@ def _get_ayon_api_key_from_additional_servers(config, server):
         # Log warning if additional server URL is misconfigured
         # without an API key
         if "@" not in line:
-            print("Configured additional server URL lacks "
-                  f"`@APIKEY` suffix: {line}")
+            print(("Configured additional server URL lacks "
+                   "`@APIKEY` suffix: {}").format(line))
             continue
 
         additional_server, api_key = line.split("@", 1)
