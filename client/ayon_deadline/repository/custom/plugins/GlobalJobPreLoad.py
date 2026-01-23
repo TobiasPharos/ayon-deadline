@@ -19,7 +19,7 @@ from Deadline.Scripting import (
 )
 
 
-__version__ = "1.2.3"
+__version__ = "1.2.5"
 VERSION_REGEX = re.compile(
     r"(?P<major>0|[1-9]\d*)"
     r"\.(?P<minor>0|[1-9]\d*)"
@@ -440,9 +440,15 @@ def inject_ayon_environment(deadlinePlugin):
         print("--- AYON executable: {}".format(exe))
 
         ayon_bundle_name = job.GetJobEnvironmentKeyValue("AYON_BUNDLE_NAME")
-        if not ayon_bundle_name:
+        ayon_studio_bundle_name = job.GetJobEnvironmentKeyValue(
+            "AYON_STUDIO_BUNDLE_NAME"
+        )
+        if not ayon_studio_bundle_name:
+            ayon_studio_bundle_name = ayon_bundle_name
+
+        if not ayon_studio_bundle_name:
             raise RuntimeError(
-                "Missing env var in job properties AYON_BUNDLE_NAME"
+                "Missing env var in job properties AYON_STUDIO_BUNDLE_NAME"
             )
 
         ayon_server_url, ayon_api_key = handle_credentials(job)
@@ -496,6 +502,7 @@ def inject_ayon_environment(deadlinePlugin):
                 _extract_environments(
                     ayon_server_url,
                     ayon_api_key,
+                    ayon_studio_bundle_name,
                     ayon_bundle_name,
                     deadlinePlugin,
                     exe,
@@ -599,6 +606,7 @@ def _get_output_dir(job):
 def _extract_environments(
     ayon_server_url,
     ayon_api_key,
+    ayon_studio_bundle_name,
     ayon_bundle_name,
     deadlinePlugin,
     exe,
@@ -610,21 +618,11 @@ def _extract_environments(
 
     add_kwargs = {
         "envgroup": "farm",
+        "project": job.GetJobEnvironmentKeyValue("AYON_PROJECT_NAME"),
+        "folder": job.GetJobEnvironmentKeyValue("AYON_FOLDER_PATH"),
+        "task": job.GetJobEnvironmentKeyValue("AYON_TASK_NAME"),
+        "app": job.GetJobEnvironmentKeyValue("AYON_APP_NAME"),
     }
-    # Support backwards compatible keys
-    for key, env_keys in (
-        ("project", ["AYON_PROJECT_NAME", "AVALON_PROJECT"]),
-        ("folder", ["AYON_FOLDER_PATH", "AVALON_ASSET"]),
-        ("task", ["AYON_TASK_NAME", "AVALON_TASK"]),
-        ("app", ["AYON_APP_NAME", "AVALON_APP_NAME"]),
-    ):
-        value = ""
-        for env_key in env_keys:
-            value = job.GetJobEnvironmentKeyValue(env_key)
-            if value:
-                break
-        add_kwargs[key] = value
-
     if not all(add_kwargs.values()):
         raise RuntimeError(
             "Missing required env vars: AYON_PROJECT_NAME,"
@@ -641,22 +639,13 @@ def _extract_environments(
         export_path
     ]
 
-    # staging requires passing argument
-    # TODO could be removed when PR in ayon-core starts to fill
-    #  'AYON_USE_STAGING' (https://github.com/ynput/ayon-core/pull/1130)
-    #  - add requirement for "core>=1.1.1" to 'package.py' when removed
-    settings_variant = job.GetJobEnvironmentKeyValue(
-        "AYON_DEFAULT_SETTINGS_VARIANT"
-    )
-    if settings_variant == "staging":
-        args.append("--use-staging")
-
     for key, value in add_kwargs.items():
         args.extend(["--{}".format(key), value])
 
     environment = {
         "AYON_SERVER_URL": ayon_server_url,
         "AYON_API_KEY": ayon_api_key,
+        "AYON_STUDIO_BUNDLE_NAME": ayon_studio_bundle_name,
         "AYON_BUNDLE_NAME": ayon_bundle_name,
         "AYON_LAUNCHER_STORAGE_DIR": "//blackhole/media/vfx/libs/ayonlib/_distro",
         "PHAROS_HOUDINILIB": "//blackhole/media/vfx/libs/houdinilib",
@@ -679,6 +668,11 @@ def _extract_environments(
     _process_exitcode = deadlinePlugin.RunProcess(
         exe, args_str, os.path.dirname(exe), -1
     )
+    if _process_exitcode != 0:
+        raise RuntimeError(
+            "AYON process to extract environments"
+            f" exited with error code: {_process_exitcode}"
+        )
 
 
 def get_ayon_executable():
